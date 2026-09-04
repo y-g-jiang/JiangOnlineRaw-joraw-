@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JoRaw 终极接口测试</title>
+    <style>
+        body { 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            background: #1e1e1e; 
+            color: #d4d4d4; 
+            padding: 30px; 
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #4ec9b0; border-bottom: 1px solid #333; padding-bottom: 15px; }
+        
+        .box { 
+            background: #252526; 
+            padding: 20px; 
+            border-radius: 8px; 
+            border: 1px solid #333; 
+            margin-bottom: 20px; 
+        }
+        
+        button {
+            padding: 10px 20px; background: #0e639c; color: white; border: none; cursor: pointer; font-size: 14px; border-radius: 4px;
+        }
+        input[type="file"] { margin-bottom: 15px; width: 100%; }
+        
+        .log-item { margin: 5px 0; border-bottom: 1px dashed #333; padding: 5px 0; }
+        .label { color: #569cd6; font-weight: bold; }
+        .value { color: #b5cea8; }
+        .array-val { color: #ce9178; font-weight: bold; font-size: 1.1em; }
+        .success { color: #6a9955; font-weight: bold; }
+        .error { color: #f48771; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>JoRaw (Custom Build) 验证</h1>
+    
+    <div class="box">
+        <h3>1. 加载文件 (DNG/Raw)</h3>
+        <input type="file" id="fileInput">
+    </div>
+
+    <div class="box">
+        <h3>2. 运行结果</h3>
+        <div id="log">等待操作...</div>
+    </div>
+</div>
+
+<!-- 
+    注意：这里 import 的名字是你编译输出的 joraw.js 
+-->
+<script type="module">
+    import initJoRaw from './joraw.js';
+
+    const fileInput = document.getElementById('fileInput');
+    const logDiv = document.getElementById('log');
+
+    function log(label, value, isError = false) {
+        const div = document.createElement('div');
+        div.className = 'log-item';
+        div.innerHTML = `<span class="label">${label}:</span> <span class="${isError ? 'error' : 'value'}">${value}</span>`;
+        logDiv.appendChild(div);
+    }
+
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        logDiv.innerHTML = ''; // 清空日志
+        log("状态", "正在初始化 WASM...", false);
+
+        try {
+            // 1. 初始化 JoRaw
+            const Module = await initJoRaw();
+            
+            if (!Module.LibRaw) throw new Error("WASM 加载失败：LibRaw 类不存在");
+            log("状态", "WASM 加载成功", false);
+
+            // 2. 读取文件 Buffer
+            const buffer = await file.arrayBuffer();
+            const uint8Buffer = new Uint8Array(buffer);
+
+            // 3. 实例化
+            const raw = new Module.LibRaw();
+            
+            // 4. 打开文件
+            // 注意：现在不需要任何 Settings，因为 getBlackLevels 和 getRawImage 都是直读
+            log("操作", "正在 Open...", false);
+            await raw.open(uint8Buffer, {});
+
+            // ========================================================
+            // 测试新接口: getBlackLevels()
+            // ========================================================
+            if (typeof raw.getBlackLevels !== 'function') {
+                throw new Error("❌ 函数 getBlackLevels 不存在！请检查 C++ 代码是否添加并重新编译。");
+            }
+
+            log("调用接口", "raw.getBlackLevels()", false);
+            const bl = raw.getBlackLevels(); // 直接拿到 Float32Array 或 Array
+            
+            // 转换成普通数组方便显示
+            const blArray = Array.from(bl);
+            const blStr = `[${blArray.map(n => n.toFixed(2)).join(', ')}]`;
+            
+            // 高亮显示结果
+            const resultDiv = document.createElement('div');
+            resultDiv.className = 'log-item';
+            resultDiv.innerHTML = `<span class="label">🎯 黑电平结果:</span> <span class="array-val">${blStr}</span>`;
+            logDiv.appendChild(resultDiv);
+
+            if (blArray[0] > 0) {
+                 log("验证结论", "<span class='success'>✅ 成功！数据已对齐 RawPy。</span>", false);
+            } else {
+                 log("验证结论", "<span class='error'>⚠️ 数值为 0，请确认该 DNG 是否特殊。</span>", false);
+            }
+
+            // ========================================================
+            // 顺便测试: getRawImage() (上帝模式)
+            // ========================================================
+            if (raw.getRawImage) {
+                const img = raw.getRawImage();
+                log("RawImage 尺寸", `${img.width} x ${img.height}`);
+                log("RawImage 数据", `Uint16Array (长度 ${img.data.length})`);
+                log("RawImage Min", Math.min(...img.data.subarray(0, 1000))); // 抽样检查
+            }
+
+            // 清理
+            if (raw.delete) raw.delete();
+
+        } catch (err) {
+            console.error(err);
+            log("❌ 错误", err.message, true);
+        }
+    });
+</script>
+
+</body>
+</html>
